@@ -1,6 +1,6 @@
 # DEPENDENCIES
 #    nnls, Hmisc, mgcv, plyr
-source("CANOES.R")
+source("CANOES_test.R")
  
 library("HiClimR")
 
@@ -36,17 +36,17 @@ Test <- function(){
   # inspect the genotype scores for the first two CNV calls
   print(head(genotyping.S2, 2))
 }
-system.time(covariance <- cor(canoes.reads[, sample.names], canoes.reads[, sample.names]))
-system.time(cor_fast <- cora(as.matrix(canoes.reads[, sample.names])))
-system.time(cor_fast2 <- fastCor(canoes.reads[, sample.names],nSplit = 1, upperTri = FALSE, optBLAS = FALSE, verbose = TRUE))
-all.equal(covariance, cor_fast)
-all.equal(covariance,cor_fast2)
+#system.time(covariance <- cor(canoes.reads[, sample.names], canoes.reads[, sample.names]))
+#system.time(cor_fast <- cora(as.matrix(canoes.reads[, sample.names])))
+#system.time(cor_fast2 <- fastCor(canoes.reads[, sample.names],nSplit = 1, upperTri = FALSE, optBLAS = FALSE, verbose = TRUE))
+#all.equal(covariance, cor_fast)
+#all.equal(covariance,cor_fast2)
 
-x <- matrnorm(100, 40)
-s1 <- cov(x) 
-s2 <- cova(x)
-all.equal(s1, s2)
-x <- NULL
+#x <- matrnorm(100, 40)
+#s1 <- cov(x) 
+#s2 <- cova(x)
+#all.equal(s1, s2)
+#x <- NULL
 
 
 # Constants
