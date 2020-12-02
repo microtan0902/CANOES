@@ -1,7 +1,7 @@
 # DEPENDENCIES
 #    nnls, Hmisc, mgcv, plyr
 source("CANOES_test.R")
- 
+source("CANOES.R")
 library("HiClimR")
 
 Test <- function(){
