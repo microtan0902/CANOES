@@ -122,25 +122,31 @@ We aim to weight reference samples more highly to the extent they share the syst
     d <- sample(nrow(A), min(500, nrow(A)))#在1到nrow中随机选取500个数，抽样来代表全部。重复50次，来代表总的权重sample.weights
     est[i, ] <- nnls(A[d, ], b[d])$x  
   }
+  head(est)
+```
+
+Because we have normalized the read count data so that all reference samples have the same aggregate read count as sample j, the coefficients also sum to 1. We then use these coefficients as the weights wk.
+```{r}
   weights <- colMeans(est)
   sample.weights <- weights / sum(weights)
   sample.weights
+  sum(sample.weights)
 ```
 
 ```{r}
 library(Hmisc)
-  # calculate weighted mean of read count
-  # this is used to calculate emission probabilities
-  counts$mean <- apply(counts[, reference.samples], 
-                       1, wtd.mean, sample.weights) # 每个target的权重均值。wtd.mean refers to 'Weighted Statistical Estimates'
-  counts$mean
-  targets <- counts$target
-    
-  # exclude probes with all zero counts
-  nonzero.rows <- counts$mean > 0
-  nonzero.rows.df <- data.frame(target=counts$target, 
-                                nonzero.rows=nonzero.rows)
-  counts <- counts[nonzero.rows, ]
+# calculate weighted mean of read count
+# this is used to calculate emission probabilities
+counts$mean <- apply(counts[, reference.samples], 
+                     1, wtd.mean, sample.weights) # 每个target的权重均值。wtd.mean refers to 'Weighted Statistical Estimates'
+counts$mean
+targets <- counts$target
+  
+# exclude probes with all zero counts
+nonzero.rows <- counts$mean > 0
+nonzero.rows.df <- data.frame(target=counts$target, 
+                              nonzero.rows=nonzero.rows)
+counts <- counts[nonzero.rows, ]
 
 ```
 ```{r}
@@ -163,7 +169,10 @@ GetDistances <- function(counts){
   distances <- GetDistances(counts)
   
 ```
+When the effective number (taking into account the weighting discussed above) of reference samples used to estimate σ2ij is low, the prediction of σ2ij may be inaccurate and sometimes may be even lower than μij, implying variance of read count less than Poisson, in which case the variance would equal the mean. We therefore set a floor on the estimate of σ2ij equal to the higher of the mean read count at target i (μij) and s2ij. s2ij
+ is a prediction of σ2ij based on the observed relationship between the sample variance and two covariates, the sample mean and the GC content. We use this floor to improve the prediction of s2ij by incorporating information from all the targets with similar mean sequence depth and GC content to target i (14).
 
+The variance of read count of targets in the reference samples is observed to increase in a curvilinear fashion with the mean read count and to be higher at both high and low GC content (see Figure 2). To establish a floor on the estimate of σ^2_ij at a target i of mean read count μ and GC content g, we regress the variance for the targets against both (i) the GC content of the targets and (ii) the mean read count across the reference samples for the targets with a generalized additive model, using the mgcv package in R (18).
 ```{r}
 EstimateVariance <- function(counts, reference.samples, sample.weights){
   library(Hmisc)
@@ -173,15 +182,20 @@ EstimateVariance <- function(counts, reference.samples, sample.weights){
   library(mgcv)
   # can't do gamma regression with negative 
   counts.subset$var[counts.subset$var==0] <- 0.1 
-  counts.subset
+  dim(counts.subset)
   # var、mean、gc为counts中的列，代表每一行target的对应的方差、均值、gc；
-  # 下面的回归应该是代表的是每一个target的var由mean和gc作为协变量
+  # 下面的回归应该是代表的是每一个target的var由reference sample的加权mean和该target的gc作为协变量
+  # Okay, 模型的均值mu和方差s实际上并不等于在data中观测到的均值mean和方差var；
   fit <- gam(var ~ s(mean) + s(gc), family=Gamma(link=log), data=counts.subset)
+  fit1 <- gam(mean+0.001 ~ s(mean) + s(gc), family=Gamma(link=log), data=counts.subset)
   # we don't want variance less than Poisson
   # we take maximum of genome-wide estimate, method of moments estimate
   # and Poisson variance
+  # 取每一target的方差，如果是泊松分布的方差（泊松分布认为均值=方差）
   v.estimate <- pmax(predict(fit, counts, type="response"), counts$var, 
                      counts$mean * 1.01)
+  
+  m.estimate <- predict(fit1, counts)
   return(data.frame(target=counts$target, var.estimate=v.estimate))
 }
 
@@ -192,44 +206,17 @@ EstimateVariance <- function(counts, reference.samples, sample.weights){
 ```
 
 ```{r}
-
-  
-  emission.probs <- EmissionProbs(counts[, sample.name], 
-                        counts$mean, var.estimate$var.estimate, 
-                        counts[, "target"])
-  if (get.dfs){
-    return(list(emission.probs=emission.probs, distances=distances))
-  }
-  # call CNVs with the Viterbi algorithm
-  viterbi.state <- Viterbi(emission.probs, distances, p, Tnum, D)  
-  # format the CNVs
-  cnvs <- PrintCNVs(sample.name, viterbi.state, 
-                         counts)
-  # if there aren't too many CNVs, calculate the Q_SOME
-  if (nrow(cnvs) > 0 & nrow(cnvs) <= 50){
-    qualities <- GenotypeCNVs(cnvs, sample.name, counts, p, Tnum, D, numrefs, 
-                          emission.probs=emission.probs, 
-                          distances=distances)
-    for (i in 1:nrow(cnvs)){
-      cnvs$Q_SOME[i] <- ifelse(cnvs$CNV[i]=="DEL", qualities[i, "SQDel"], 
-                               qualities[i, "SQDup"])
-    }
-  }
-  data <- as.data.frame(cbind(counts$target, counts$mean, var.estimate$var.estimate, counts[, sample.name]))
-  names(data) <- c("target", "countsmean", "varestimate", "sample")
-  if (nrow(cnvs) > 0){
-    cnvs <- CalcCopyNumber(data, cnvs, homdel.mean)
-  }
-  return(cnvs)
-}
-```
-
-
+# for test a sample
+test.counts <- counts[, sample.name]
+target.means <- counts$mean
+var.estimate <- var.estimate$var.estimate
+targets <- counts[, "target"]
 
 EmissionProbs <- function(test.counts, target.means, 
                                       var.estimate, targets){
   num.targets <- length(test.counts)
   # calculate the means for the deletion, normal and duplication states
+  # 就是把每一个target的mean取1/2、3/2作为del和dup的mean
   state.target.means <- t(apply(data.frame(x=target.means), 1, function(x) c(x*1/2, x, x*3/2)))
   # calculate the expected size (given the predicted variance)
   size <- target.means ^ 2 / (var.estimate - target.means)
@@ -268,6 +255,49 @@ EmissionProbs <- function(test.counts, target.means,
   }
   return(emission.probs)
 }
+
+head(emission.probs)
+```
+
+### RT comments：
+CANOES是假设RC在每一个target服从NB分布，对每一个target上的RC进行参数估计。参数s受GC和RC均值影响，作为协变量进行回归。
+我认为其目的是可以更加精准的获取每一个target上的模型，从而对该区域的CN可以更好的进行预测。
+- 缺点：理解难度大，且实际效果与以样本为单位，先GC校正之后再取非极端的RC进行参数估计的实际效果没有比较研究。
+
+```{r}
+  emission.probs <- EmissionProbs(counts[, sample.name], 
+                        counts$mean, var.estimate$var.estimate, 
+                        counts[, "target"])
+  if (get.dfs){
+    return(list(emission.probs=emission.probs, distances=distances))
+  }
+  # call CNVs with the Viterbi algorithm
+  viterbi.state <- Viterbi(emission.probs, distances, p, Tnum, D)  
+  # format the CNVs
+  cnvs <- PrintCNVs(sample.name, viterbi.state, 
+                         counts)
+  # if there aren't too many CNVs, calculate the Q_SOME
+  if (nrow(cnvs) > 0 & nrow(cnvs) <= 50){
+    qualities <- GenotypeCNVs(cnvs, sample.name, counts, p, Tnum, D, numrefs, 
+                          emission.probs=emission.probs, 
+                          distances=distances)
+    for (i in 1:nrow(cnvs)){
+      cnvs$Q_SOME[i] <- ifelse(cnvs$CNV[i]=="DEL", qualities[i, "SQDel"], 
+                               qualities[i, "SQDup"])
+    }
+  }
+  data <- as.data.frame(cbind(counts$target, counts$mean, var.estimate$var.estimate, counts[, sample.name]))
+  names(data) <- c("target", "countsmean", "varestimate", "sample")
+  if (nrow(cnvs) > 0){
+    cnvs <- CalcCopyNumber(data, cnvs, homdel.mean)
+  }
+  return(cnvs)
+}
+```
+
+
+
+
 
 # Viterbi algorithm
 Viterbi <- function(emission.probs.matrix, distances, p, Tnum, D){
