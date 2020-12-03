@@ -124,28 +124,76 @@ We aim to weight reference samples more highly to the extent they share the syst
   }
   weights <- colMeans(est)
   sample.weights <- weights / sum(weights)
+  sample.weights
 ```
 
-
 ```{r}
-  
-  library(Hmisc)
+library(Hmisc)
   # calculate weighted mean of read count
   # this is used to calculate emission probabilities
   counts$mean <- apply(counts[, reference.samples], 
                        1, wtd.mean, sample.weights) # 每个target的权重均值。wtd.mean refers to 'Weighted Statistical Estimates'
+  counts$mean
   targets <- counts$target
+    
   # exclude probes with all zero counts
   nonzero.rows <- counts$mean > 0
   nonzero.rows.df <- data.frame(target=counts$target, 
                                 nonzero.rows=nonzero.rows)
-
   counts <- counts[nonzero.rows, ]
+
+```
+```{r}
+# returns data frame with distance to each target from the previous target 
+# (0 in the case of the first target on chromosome 1, a very big number
+# for the first target on each other chromosome--this resets the HMM
+# for each chromosome)
+GetDistances <- function(counts){
+  chromosome <- counts[, "chromosome"]
+  startbase <- counts[, "start"]
+  num.nonzero.exons <- length(startbase)
+  distances <- c(0, startbase[2:num.nonzero.exons] - 
+                   startbase[1:(num.nonzero.exons - 1)] + 
+                   1000000000000 * (chromosome[2:num.nonzero.exons] - 
+                                      chromosome[1:(num.nonzero.exons - 1)]))
+  return(data.frame(target=counts[, "target"], distance=distances))
+}
+
   # get the distances between consecutive probes
   distances <- GetDistances(counts)
-  # estimate the read count variance at each probe
+  
+```
+
+```{r}
+EstimateVariance <- function(counts, reference.samples, sample.weights){
+  library(Hmisc)
+  counts$var <- apply(counts[, reference.samples], 1, wtd.var, sample.weights, normwt=T)#是对每一行（target）求加权方差
+  set.seed(1)
+  counts.subset <- counts[sample(nrow(counts), min(36000, nrow(counts))), ]#取最大为36k target的子矩阵
+  library(mgcv)
+  # can't do gamma regression with negative 
+  counts.subset$var[counts.subset$var==0] <- 0.1 
+  counts.subset
+  # var、mean、gc为counts中的列，代表每一行target的对应的方差、均值、gc；
+  # 下面的回归应该是代表的是每一个target的var由mean和gc作为协变量
+  fit <- gam(var ~ s(mean) + s(gc), family=Gamma(link=log), data=counts.subset)
+  # we don't want variance less than Poisson
+  # we take maximum of genome-wide estimate, method of moments estimate
+  # and Poisson variance
+  v.estimate <- pmax(predict(fit, counts, type="response"), counts$var, 
+                     counts$mean * 1.01)
+  return(data.frame(target=counts$target, var.estimate=v.estimate))
+}
+
+# estimate the read count variance at each probe
   var.estimate <- EstimateVariance(counts, reference.samples, 
                                                sample.weights)
+
+```
+
+```{r}
+
+  
   emission.probs <- EmissionProbs(counts[, sample.name], 
                         counts$mean, var.estimate$var.estimate, 
                         counts[, "target"])
@@ -177,40 +225,6 @@ We aim to weight reference samples more highly to the extent they share the syst
 ```
 
 
-  
-
-
-# returns data frame with distance to each target from the previous target 
-# (0 in the case of the first target on chromosome 1, a very big number
-# for the first target on each other chromosome--this resets the HMM
-# for each chromosome)
-GetDistances <- function(counts){
-  chromosome <- counts[, "chromosome"]
-  startbase <- counts[, "start"]
-  num.nonzero.exons <- length(startbase)
-  distances <- c(0, startbase[2:num.nonzero.exons] - 
-                   startbase[1:(num.nonzero.exons - 1)] + 
-                   1000000000000 * (chromosome[2:num.nonzero.exons] - 
-                                      chromosome[1:(num.nonzero.exons - 1)]))
-  return(data.frame(target=counts[, "target"], distance=distances))
-}
-
-EstimateVariance <- function(counts, ref.sample.names, sample.weights){
-  library(Hmisc)
-  counts$var <- apply(counts[, ref.sample.names], 1, wtd.var, sample.weights, normwt=T)
-  set.seed(1)
-  counts.subset <- counts[sample(nrow(counts), min(36000, nrow(counts))), ]
-  library(mgcv)
-  # can't do gamma regression with negative 
-  counts.subset$var[counts.subset$var==0] <- 0.1 
-  fit <- gam(var ~ s(mean) + s(gc), family=Gamma(link=log), data=counts.subset)
-  # we don't want variance less than Poisson
-  # we take maximum of genome-wide estimate, method of moments estimate
-  # and Poisson variance
-  v.estimate <- pmax(predict(fit, counts, type="response"), counts$var, 
-                     counts$mean * 1.01)
-  return(data.frame(target=counts$target, var.estimate=v.estimate))
-}
 
 EmissionProbs <- function(test.counts, target.means, 
                                       var.estimate, targets){
